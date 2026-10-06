@@ -1,0 +1,146 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  adult
+  child
+}
+
+model Family {
+  id         String   @id @default(cuid())
+  name       String
+  inviteCode String   @unique
+  createdAt  DateTime @default(now())
+
+  users  User[]
+  goals  FamilyGoal[]
+}
+
+model User {
+  id           String   @id @default(cuid())
+  familyId     String
+  family       Family   @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(adult)
+  // IANA-имя часового пояса, по нему определяются «сегодня» и «вчера»
+  timeZone     String   @default("UTC")
+  createdAt    DateTime @default(now())
+
+  activityLogs    ActivityLog[]
+  mealLogs         MealLog[]
+  waterLogs        WaterLog[]
+  healthLogs       HealthLog[]
+  pointsEvents     PointsEvent[]
+  userAchievements UserAchievement[]
+
+  @@index([familyId])
+}
+
+model ActivityLog {
+  id              String   @id @default(cuid())
+  userId          String
+  user            User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type            String
+  durationMinutes Int
+  distanceKm      Float?
+  note            String?
+  date            DateTime
+  createdAt       DateTime @default(now())
+
+  @@index([userId, date])
+}
+
+model MealLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  mealType  String
+  description String
+  date      DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId, date])
+}
+
+model WaterLog {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  amountMl  Int
+  date      DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId, date])
+}
+
+model HealthLog {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  weightKg   Float?
+  sleepHours Float?
+  mood       Int?
+  note       String?
+  date       DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([userId, date])
+}
+
+model PointsEvent {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  points    Int
+  reason    String
+  sourceType String?
+  sourceId  String?
+  // День записи, за которую начислены баллы (для суточных лимитов)
+  date      DateTime?
+  createdAt DateTime @default(now())
+
+  @@unique([sourceType, sourceId])
+  @@index([userId, sourceType, date])
+}
+
+model Achievement {
+  id          String @id @default(cuid())
+  code        String @unique
+  title       String
+  description String
+
+  users UserAchievement[]
+}
+
+model UserAchievement {
+  id            String      @id @default(cuid())
+  userId        String
+  user          User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  achievementId String
+  achievement   Achievement @relation(fields: [achievementId], references: [id], onDelete: Cascade)
+  unlockedAt    DateTime    @default(now())
+
+  @@unique([userId, achievementId])
+}
+
+model FamilyGoal {
+  id          String   @id @default(cuid())
+  familyId    String
+  family      Family   @relation(fields: [familyId], references: [id], onDelete: Cascade)
+  title       String
+  metric      String
+  targetValue Float
+  startDate   DateTime
+  endDate     DateTime
+  createdAt   DateTime @default(now())
+
+  @@index([familyId])
+}
