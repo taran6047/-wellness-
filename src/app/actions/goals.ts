@@ -1,6 +1,7 @@
 "use server";
 
 import { revalidatePath } from "next/cache";
+import { MAX_FAMILY_GOALS } from "@/lib/constants";
 import { prisma } from "@/lib/db";
 import { requireUser } from "@/lib/require-user";
 import { goalSchema, recordIdSchema } from "@/lib/validation";
@@ -33,6 +34,14 @@ export async function createGoalAction(
   }
 
   try {
+    const count = await prisma.familyGoal.count({
+      where: { familyId: me.familyId },
+    });
+    if (count >= MAX_FAMILY_GOALS) {
+      return {
+        error: `Достигнут лимит: не более ${MAX_FAMILY_GOALS} целей на семью. Удалите ненужные цели`,
+      };
+    }
     await prisma.familyGoal.create({
       data: { familyId: me.familyId, ...parsed.data },
     });
@@ -46,14 +55,21 @@ export async function createGoalAction(
 }
 
 // Удаляется только цель семьи текущего пользователя
-export async function deleteGoalAction(formData: FormData) {
+export async function deleteGoalAction(
+  formData: FormData,
+): Promise<FormState> {
   const me = await requireUser();
   if (me.role !== "adult") return;
   const id = recordIdSchema.safeParse(formData.get("id"));
   if (!id.success) return;
-  await prisma.familyGoal.deleteMany({
-    where: { id: id.data, familyId: me.familyId },
-  });
+  try {
+    await prisma.familyGoal.deleteMany({
+      where: { id: id.data, familyId: me.familyId },
+    });
+  } catch (e) {
+    console.error("delete goal failed", e);
+    return { error: "Не удалось удалить цель. Попробуйте ещё раз" };
+  }
   revalidatePath("/goals");
   revalidatePath("/");
 }

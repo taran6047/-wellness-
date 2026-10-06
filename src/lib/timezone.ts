@@ -14,6 +14,24 @@ export function normalizeTimeZone(value: unknown): string {
   }
 }
 
+let supportedZones: Set<string> | null = null;
+
+// Допустимые для смены пояса значения: IANA-имена из Intl.supportedValuesOf и «UTC»
+// (смещения вроде +23:59 не принимаются)
+export function isSupportedTimeZone(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+  if (!supportedZones) {
+    supportedZones = new Set([
+      DEFAULT_TIME_ZONE,
+      ...Intl.supportedValuesOf("timeZone"),
+    ]);
+    // В зависимости от версии ICU Киев называется Kiev или Kyiv: принимаем оба
+    if (supportedZones.has("Europe/Kiev")) supportedZones.add("Europe/Kyiv");
+    if (supportedZones.has("Europe/Kyiv")) supportedZones.add("Europe/Kiev");
+  }
+  return supportedZones.has(value);
+}
+
 // Дата YYYY-MM-DD «сейчас + offsetDays» в заданном часовом поясе
 export function dateInTimeZone(timeZone: string, offsetDays = 0): string {
   const parts = new Intl.DateTimeFormat("en-CA", {

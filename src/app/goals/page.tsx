@@ -1,4 +1,5 @@
 import { deleteGoalAction } from "@/app/actions/goals";
+import { DeleteForm } from "@/components/delete-form";
 import { GoalForm } from "@/components/goal-form";
 import { GoalCard } from "@/components/goal-ui";
 import { getFamilyGoalsWithProgress } from "@/lib/family-goals";
@@ -31,15 +32,11 @@ export default async function GoalsPage() {
               goal={goal}
               action={
                 isAdult ? (
-                  <form action={deleteGoalAction} className="mt-3">
-                    <input type="hidden" name="id" value={goal.id} />
-                    <button
-                      type="submit"
-                      className="text-sm text-red-600 hover:underline"
-                    >
-                      Удалить
-                    </button>
-                  </form>
+                  <DeleteForm
+                    id={goal.id}
+                    action={deleteGoalAction}
+                    className="mt-2"
+                  />
                 ) : null
               }
             />

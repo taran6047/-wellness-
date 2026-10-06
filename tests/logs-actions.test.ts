@@ -14,8 +14,9 @@ const m = vi.hoisted(() => {
     healthLog: model(),
     pointsEvent: { create: vi.fn(), aggregate: vi.fn(), deleteMany: vi.fn() },
     $executeRaw: vi.fn(),
-    achievement: { createMany: vi.fn(), findUniqueOrThrow: vi.fn() },
-    userAchievement: { findMany: vi.fn(), createMany: vi.fn() },
+    $queryRaw: vi.fn(),
+    achievement: { createMany: vi.fn(), findMany: vi.fn() },
+    userAchievement: { findMany: vi.fn(), createManyAndReturn: vi.fn() },
   };
   return {
     requireUser: vi.fn(),
@@ -48,6 +49,15 @@ import {
 const GENERIC_ERROR = "Что-то пошло не так. Попробуйте ещё раз";
 const TODAY = new Date().toISOString().slice(0, 10);
 
+const zeroStats = {
+  activityCount: 0,
+  mealCount: 0,
+  waterCount: 0,
+  healthCount: 0,
+  totalPoints: 0,
+};
+let stats: typeof zeroStats = { ...zeroStats };
+
 function fd(fields: Record<string, string>) {
   const f = new FormData();
   for (const [k, v] of Object.entries(fields)) f.set(k, v);
@@ -69,9 +79,19 @@ beforeEach(() => {
   m.pointsEvent.deleteMany.mockResolvedValue({ count: 1 });
   m.$executeRaw.mockResolvedValue(1);
   m.achievement.createMany.mockResolvedValue({ count: 1 });
-  m.achievement.findUniqueOrThrow.mockResolvedValue({ id: "ach1" });
+  m.achievement.findMany.mockImplementation(({ where }: { where: { code: { in: string[] } } }) =>
+    Promise.resolve(where.code.in.map((code) => ({ id: `id-${code}`, code }))),
+  );
   m.userAchievement.findMany.mockResolvedValue([]);
-  m.userAchievement.createMany.mockResolvedValue({ count: 1 });
+  m.userAchievement.createManyAndReturn.mockImplementation(
+    ({ data }: { data: { achievementId: string }[] }) =>
+      Promise.resolve(data.map((d) => ({ achievementId: d.achievementId }))),
+  );
+  // Счётчики (запрос с алиасом activityCount) и дни с записями приходят из $queryRaw
+  stats = { ...zeroStats };
+  m.$queryRaw.mockImplementation((strings: TemplateStringsArray) =>
+    Promise.resolve(strings.join("?").includes('"activityCount"') ? [stats] : []),
+  );
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -85,6 +105,7 @@ const addCases = [
     valid: { type: "running", durationMinutes: "30", distanceKm: "5", note: "бег", date: TODAY },
     invalid: { type: "running", durationMinutes: "0", date: TODAY },
     invalidMsg: "Длительность: от 1 до 1440 минут",
+    limitMsg: "Достигнут лимит: не более 50 записей активности в день",
   },
   {
     name: "addMealAction",
@@ -95,6 +116,7 @@ const addCases = [
     valid: { mealType: "lunch", description: "суп", date: TODAY },
     invalid: { mealType: "brunch", description: "суп", date: TODAY },
     invalidMsg: "Выберите приём пищи",
+    limitMsg: "Достигнут лимит: не более 50 записей питания в день",
   },
   {
     name: "addWaterAction",
@@ -105,6 +127,7 @@ const addCases = [
     valid: { amountMl: "250", date: TODAY },
     invalid: { amountMl: "5001", date: TODAY },
     invalidMsg: "Объём: от 1 до 5000 мл",
+    limitMsg: "Достигнут лимит: не более 50 записей воды в день",
   },
   {
     name: "addHealthAction",
@@ -115,10 +138,11 @@ const addCases = [
     valid: { weightKg: "60", sleepHours: "8", mood: "4", note: "ок", date: TODAY },
     invalid: { note: "ничего", date: TODAY },
     invalidMsg: "Заполните вес, сон или самочувствие",
+    limitMsg: "Достигнут лимит: не более 50 записей здоровья в день",
   },
 ] as const;
 
-describe.each(addCases)("$name", ({ action, model, path, valid, invalid, invalidMsg, message }) => {
+describe.each(addCases)("$name", ({ action, model, path, valid, invalid, invalidMsg, message, limitMsg }) => {
   it("сохраняет запись от имени пользователя из сессии и вызывает revalidatePath", async () => {
     const r = await action(undefined, fd(valid));
     expect(r).toEqual({ message });
@@ -137,10 +161,42 @@ describe.each(addCases)("$name", ({ action, model, path, valid, invalid, invalid
   });
 
   it("новое достижение добавляется к сообщению", async () => {
-    m[model].count.mockResolvedValue(1);
+    stats = { ...zeroStats, activityCount: 1, mealCount: 1, waterCount: 1, healthCount: 1 };
     const r = await action(undefined, fd(valid));
     expect(r?.message).toMatch(/^Сохранено, .*\. Новое достижение: .+/);
     expect(r?.error).toBeUndefined();
+    expect(m.userAchievement.createManyAndReturn).toHaveBeenCalledTimes(1);
+  });
+
+  it("достижение выдано параллельной записью (гонка): в сообщении его нет", async () => {
+    stats = { ...zeroStats, activityCount: 1, mealCount: 1, waterCount: 1, healthCount: 1 };
+    m.userAchievement.createManyAndReturn.mockResolvedValue([]);
+    const r = await action(undefined, fd(valid));
+    expect(r?.message).not.toContain("Новое достижение");
+    expect(r?.error).toBeUndefined();
+  });
+
+  it("лимит записей в день (51-я запись): русское сообщение, без «общей» ошибки и без revalidatePath", async () => {
+    m[model].count.mockResolvedValue(50);
+    const r = await action(undefined, fd(valid));
+    expect(r).toEqual({ error: limitMsg });
+    expect(m[model].create).not.toHaveBeenCalled();
+    expect(m.pointsEvent.create).not.toHaveBeenCalled();
+    expect(m.revalidatePath).not.toHaveBeenCalled();
+    // ожидаемая ошибка пользователя не логируется как сбой
+    expect(console.error).not.toHaveBeenCalled();
+  });
+
+  it("49 записей за день: 50-я сохраняется", async () => {
+    m[model].count.mockResolvedValue(49);
+    const r = await action(undefined, fd(valid));
+    expect(r?.error).toBeUndefined();
+    expect(m[model].create).toHaveBeenCalledTimes(1);
+  });
+
+  it("лимит считается по userId из сессии", async () => {
+    await action(undefined, fd({ ...valid, userId: "victim" }));
+    expect(m[model].count.mock.calls[0][0].where.userId).toBe("me");
   });
 
   it("подделанные userId/familyId в FormData игнорируются", async () => {
@@ -295,6 +351,19 @@ describe.each(deleteCases)("$name", ({ action, model, path }) => {
       expect(m.revalidatePath).not.toHaveBeenCalled();
     },
   );
+
+  it("успешное удаление возвращает undefined", async () => {
+    await expect(action(fd({ id: "rec1" }))).resolves.toBeUndefined();
+  });
+
+  it("сбой БД: русская ошибка вместо исключения, revalidatePath не вызывается, сбой логируется", async () => {
+    m[model].deleteMany.mockRejectedValue(new Error("connection refused"));
+    const r = await action(fd({ id: "rec1" }));
+    expect(r).toEqual({ error: "Не удалось удалить запись. Попробуйте ещё раз" });
+    expect(JSON.stringify(r)).not.toContain("connection refused");
+    expect(m.revalidatePath).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalled();
+  });
 
   it("без сессии ничего не удаляется", async () => {
     const redirect = new Error("NEXT_REDIRECT:/login");

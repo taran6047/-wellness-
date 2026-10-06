@@ -1,4 +1,6 @@
 import type { ReactNode } from "react";
+import type { FormState } from "@/app/actions/auth";
+import { DeleteForm } from "@/components/delete-form";
 
 function formatDate(date: Date) {
   return date.toLocaleDateString("ru-RU", { timeZone: "UTC" });
@@ -22,7 +24,7 @@ export function LogList({
   title: string;
   items: Item[];
   meId: string;
-  deleteAction: (formData: FormData) => Promise<void>;
+  deleteAction: (formData: FormData) => Promise<FormState>;
 }) {
   return (
     <div>
@@ -34,7 +36,7 @@ export function LogList({
           {items.map((item) => (
             <li
               key={item.id}
-              className="flex items-start justify-between gap-4 px-4 py-3"
+              className="flex items-start justify-between gap-2 px-4 py-3"
             >
               <div className="min-w-0">
                 <p className="text-sm text-slate-600">
@@ -43,15 +45,11 @@ export function LogList({
                 <div className="break-words">{item.content}</div>
               </div>
               {item.authorId === meId && (
-                <form action={deleteAction}>
-                  <input type="hidden" name="id" value={item.id} />
-                  <button
-                    type="submit"
-                    className="text-sm text-red-600 hover:underline"
-                  >
-                    Удалить
-                  </button>
-                </form>
+                <DeleteForm
+                  id={item.id}
+                  action={deleteAction}
+                  className="shrink-0 text-right"
+                />
               )}
             </li>
           ))}

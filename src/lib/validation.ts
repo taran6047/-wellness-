@@ -5,7 +5,7 @@ import {
   MAX_GOAL_TARGET,
   goalPeriodDays,
 } from "@/lib/goals";
-import { normalizeTimeZone } from "@/lib/timezone";
+import { DEFAULT_TIME_ZONE, isSupportedTimeZone } from "@/lib/timezone";
 
 const email = z
   .string()
@@ -30,7 +30,10 @@ const password = z
 export const timeZoneSchema = z
   .unknown()
   .optional()
-  .transform((v) => normalizeTimeZone(v));
+  .transform((v) => {
+    const value = typeof v === "string" ? v.trim() : v;
+    return isSupportedTimeZone(value) ? value : DEFAULT_TIME_ZONE;
+  });
 
 const name = z
   .string()

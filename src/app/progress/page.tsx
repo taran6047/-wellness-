@@ -84,8 +84,8 @@ export default async function ProgressPage() {
       <ul className="mt-3 divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white">
         {ranking.map((u) => (
           <li key={u.id} className="flex justify-between gap-4 px-4 py-3">
-            <span>{u.name}</span>
-            <span className="text-slate-600">
+            <span className="min-w-0 break-words">{u.name}</span>
+            <span className="shrink-0 text-slate-600">
               {u.points} · уровень {levelForPoints(u.points)}
             </span>
           </li>

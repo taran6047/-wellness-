@@ -29,8 +29,8 @@ export function GoalCard({
   return (
     <li className="rounded-lg border border-slate-200 bg-white p-4">
       <div className="flex flex-wrap items-start justify-between gap-2">
-        <div>
-          <p className="font-medium">{goal.title}</p>
+        <div className="min-w-0">
+          <p className="break-words font-medium">{goal.title}</p>
           <p className="text-sm text-slate-500">
             {info?.label ?? goal.metric} · {formatDay(goal.startDate)} —{" "}
             {formatDay(goal.endDate)}

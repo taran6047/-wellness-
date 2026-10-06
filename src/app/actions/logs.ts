@@ -26,6 +26,11 @@ import type { FormState } from "@/app/actions/auth";
 
 const GENERIC_ERROR = "Что-то пошло не так. Попробуйте ещё раз";
 
+// Ошибка лимита записей в день (см. DailyLimitError в lib/logs.ts), текст уже по-русски
+function isDailyLimitError(e: unknown): e is Error {
+  return e instanceof Error && e.name === "DailyLimitError";
+}
+
 function saved(result: CreateResult): FormState {
   let message = savedMessage(result.points);
   if (result.newAchievements.length > 0) {
@@ -64,6 +69,7 @@ export async function addActivityAction(
   try {
     result = await createActivityLog(me.id, parsed.data);
   } catch (e) {
+    if (isDailyLimitError(e)) return { error: e.message };
     console.error("add activity failed", e);
     return { error: GENERIC_ERROR };
   }
@@ -91,6 +97,7 @@ export async function addMealAction(
   try {
     result = await createMealLog(me.id, parsed.data);
   } catch (e) {
+    if (isDailyLimitError(e)) return { error: e.message };
     console.error("add meal failed", e);
     return { error: GENERIC_ERROR };
   }
@@ -117,6 +124,7 @@ export async function addWaterAction(
   try {
     result = await createWaterLog(me.id, parsed.data);
   } catch (e) {
+    if (isDailyLimitError(e)) return { error: e.message };
     console.error("add water failed", e);
     return { error: GENERIC_ERROR };
   }
@@ -146,6 +154,7 @@ export async function addHealthAction(
   try {
     result = await createHealthLog(me.id, parsed.data);
   } catch (e) {
+    if (isDailyLimitError(e)) return { error: e.message };
     console.error("add health failed", e);
     return { error: GENERIC_ERROR };
   }
@@ -159,27 +168,32 @@ async function deleteRecord(
   formData: FormData,
   remove: (userId: string, id: string) => Promise<void>,
   path: string,
-) {
+): Promise<FormState> {
   const me = await requireUser();
   const id = recordIdSchema.safeParse(formData.get("id"));
   if (!id.success) return;
-  await remove(me.id, id.data);
+  try {
+    await remove(me.id, id.data);
+  } catch (e) {
+    console.error("delete record failed", e);
+    return { error: "Не удалось удалить запись. Попробуйте ещё раз" };
+  }
   revalidatePath(path);
   revalidatePath("/progress");
 }
 
 export async function deleteActivityAction(formData: FormData) {
-  await deleteRecord(formData, deleteOwnActivityLog, "/activity");
+  return deleteRecord(formData, deleteOwnActivityLog, "/activity");
 }
 
 export async function deleteMealAction(formData: FormData) {
-  await deleteRecord(formData, deleteOwnMealLog, "/nutrition");
+  return deleteRecord(formData, deleteOwnMealLog, "/nutrition");
 }
 
 export async function deleteWaterAction(formData: FormData) {
-  await deleteRecord(formData, deleteOwnWaterLog, "/nutrition");
+  return deleteRecord(formData, deleteOwnWaterLog, "/nutrition");
 }
 
 export async function deleteHealthAction(formData: FormData) {
-  await deleteRecord(formData, deleteOwnHealthLog, "/health");
+  return deleteRecord(formData, deleteOwnHealthLog, "/health");
 }

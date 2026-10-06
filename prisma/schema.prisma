@@ -32,6 +32,8 @@ model User {
   role         Role     @default(adult)
   // IANA-имя часового пояса, по нему определяются «сегодня» и «вчера»
   timeZone     String   @default("UTC")
+  // Когда пояс меняли в последний раз (при регистрации не заполняется); смена — не чаще раза в 7 дней
+  timeZoneChangedAt DateTime?
   createdAt    DateTime @default(now())
 
   activityLogs    ActivityLog[]
@@ -143,4 +145,12 @@ model FamilyGoal {
   createdAt   DateTime @default(now())
 
   @@index([familyId])
+}
+
+// Неудачные попытки входа по email (защита от перебора паролей)
+model LoginAttempt {
+  email       String    @id
+  failedCount Int       @default(0)
+  windowStart DateTime  @default(now())
+  lockedUntil DateTime?
 }

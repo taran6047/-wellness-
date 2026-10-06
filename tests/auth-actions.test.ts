@@ -2,6 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const m = vi.hoisted(() => {
   class AuthError extends Error {}
+  // Как в next-auth: CredentialsSignin наследует AuthError, код ошибки в поле code
+  class CredentialsSignin extends AuthError {
+    code = "credentials";
+  }
   class PrismaClientKnownRequestError extends Error {
     code: string;
     meta?: Record<string, unknown>;
@@ -13,6 +17,7 @@ const m = vi.hoisted(() => {
   }
   return {
     AuthError,
+    CredentialsSignin,
     PrismaClientKnownRequestError,
     signIn: vi.fn(),
     signOut: vi.fn(),
@@ -24,7 +29,11 @@ const m = vi.hoisted(() => {
   };
 });
 
-vi.mock("next-auth", () => ({ AuthError: m.AuthError, default: vi.fn() }));
+vi.mock("next-auth", () => ({
+  AuthError: m.AuthError,
+  CredentialsSignin: m.CredentialsSignin,
+  default: vi.fn(),
+}));
 vi.mock("@prisma/client", () => ({
   Prisma: { PrismaClientKnownRequestError: m.PrismaClientKnownRequestError },
 }));
@@ -94,6 +103,31 @@ describe("loginAction", () => {
     });
   });
 
+  it("CredentialsSignin с обычным кодом: то же единое сообщение", async () => {
+    m.signIn.mockRejectedValue(new m.CredentialsSignin("CredentialsSignin"));
+    expect(await loginAction(undefined, fd({ email: "a@b.com", password: "wrong" }))).toEqual({
+      error: LOGIN_ERROR,
+    });
+  });
+
+  it("блокировка (CredentialsSignin с кодом locked): сообщение о слишком большом числе попыток", async () => {
+    const locked = new m.CredentialsSignin("locked");
+    locked.code = "locked";
+    m.signIn.mockRejectedValue(locked);
+    const r = await loginAction(undefined, fd({ email: "a@b.com", password: "x" }));
+    expect(r).toEqual({ error: "Слишком много попыток, попробуйте позже" });
+    expect(r).not.toEqual({ error: LOGIN_ERROR });
+  });
+
+  it("код locked у обычного AuthError (не CredentialsSignin) блокировкой не считается", async () => {
+    const e = new m.AuthError("x") as Error & { code?: string };
+    e.code = "locked";
+    m.signIn.mockRejectedValue(e);
+    expect(await loginAction(undefined, fd({ email: "a@b.com", password: "x" }))).toEqual({
+      error: LOGIN_ERROR,
+    });
+  });
+
   it("при пустых полях возвращает то же единое сообщение и не вызывает signIn", async () => {
     expect(await loginAction(undefined, fd({ email: "a@b.com", password: "" }))).toEqual({
       error: LOGIN_ERROR,
@@ -149,6 +183,26 @@ describe("registerAction: создание семьи", () => {
       registerAction(undefined, fd({ ...createFields, timeZone: "Nowhere/City" })),
     ).rejects.toBe(redirect);
     expect(m.familyCreate.mock.calls[0][0].data.users.create.timeZone).toBe("UTC");
+  });
+
+  it.each(["+23:59", "GMT+3", "utc"])("timeZone %j (смещение или не тот регистр) заменяется на UTC, регистрация проходит", async (tz) => {
+    await expect(registerAction(undefined, fd({ ...createFields, timeZone: tz }))).rejects.toBe(redirect);
+    expect(m.familyCreate.mock.calls[0][0].data.users.create.timeZone).toBe("UTC");
+  });
+
+  it("timeZone с пробелами по краям обрезается и сохраняется", async () => {
+    await registerAction(undefined, fd({ ...createFields, timeZone: "  Europe/Moscow  " })).catch(() => {});
+    expect(m.familyCreate.mock.calls[0][0].data.users.create.timeZone).toBe("Europe/Moscow");
+  });
+
+  it("America/Los_Angeles сохраняется как есть", async () => {
+    await registerAction(undefined, fd({ ...createFields, timeZone: "America/Los_Angeles" })).catch(() => {});
+    expect(m.familyCreate.mock.calls[0][0].data.users.create.timeZone).toBe("America/Los_Angeles");
+  });
+
+  it("регистрация не считается сменой пояса: timeZoneChangedAt не задаётся", async () => {
+    await registerAction(undefined, fd({ ...createFields, timeZone: "Europe/Moscow" })).catch(() => {});
+    expect(m.familyCreate.mock.calls[0][0].data.users.create).not.toHaveProperty("timeZoneChangedAt");
   });
 
   it("не хранит пароль в открытом виде", async () => {
@@ -222,6 +276,18 @@ describe("registerAction: вступление по коду", () => {
     expect(m.userCreate.mock.calls[0][0].data.timeZone).toBe("Asia/Vladivostok");
   });
 
+  it("при вступлении timeZoneChangedAt не задаётся (регистрация не считается сменой пояса)", async () => {
+    m.familyFindUnique.mockResolvedValue({ id: "fam-1" });
+    await registerAction(undefined, fd({ ...joinFields, timeZone: "Asia/Vladivostok" })).catch(() => {});
+    expect(m.userCreate.mock.calls[0][0].data).not.toHaveProperty("timeZoneChangedAt");
+  });
+
+  it.each(["+23:59", "GMT+3"])("при вступлении timeZone %j заменяется на UTC", async (tz) => {
+    m.familyFindUnique.mockResolvedValue({ id: "fam-1" });
+    await registerAction(undefined, fd({ ...joinFields, timeZone: tz })).catch(() => {});
+    expect(m.userCreate.mock.calls[0][0].data.timeZone).toBe("UTC");
+  });
+
   it("неизвестный timeZone при вступлении заменяется на UTC", async () => {
     m.familyFindUnique.mockResolvedValue({ id: "fam-1" });
     await registerAction(undefined, fd({ ...joinFields, timeZone: "Mars/Base" })).catch(() => {});
@@ -278,6 +344,11 @@ describe("registerAction: валидация и вход после регист
 
   it("AuthError при автоматическом входе даёт общую ошибку", async () => {
     m.signIn.mockRejectedValue(new m.AuthError("x"));
+    expect(await registerAction(undefined, fd(createFields))).toEqual({ error: GENERIC_ERROR });
+  });
+
+  it("CredentialsSignin при автоматическом входе после регистрации тоже даёт общую ошибку", async () => {
+    m.signIn.mockRejectedValue(new m.CredentialsSignin("x"));
     expect(await registerAction(undefined, fd(createFields))).toEqual({ error: GENERIC_ERROR });
   });
 });

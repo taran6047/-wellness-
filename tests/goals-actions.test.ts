@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const m = vi.hoisted(() => ({
   requireUser: vi.fn(),
   revalidatePath: vi.fn(),
-  familyGoal: { create: vi.fn(), deleteMany: vi.fn() },
+  familyGoal: { create: vi.fn(), deleteMany: vi.fn(), count: vi.fn() },
 }));
 
 vi.mock("@/lib/db", () => ({ prisma: { familyGoal: m.familyGoal } }));
@@ -34,6 +34,7 @@ beforeEach(() => {
   m.requireUser.mockResolvedValue({ id: "me", familyId: "fam-1", role: "adult" });
   m.familyGoal.create.mockResolvedValue({ id: "g1" });
   m.familyGoal.deleteMany.mockResolvedValue({ count: 1 });
+  m.familyGoal.count.mockResolvedValue(0);
   vi.spyOn(console, "error").mockImplementation(() => {});
 });
 
@@ -119,6 +120,65 @@ describe("createGoalAction", () => {
     expect(m.revalidatePath).not.toHaveBeenCalled();
   });
 
+  it("сбой подсчёта целей: общее сообщение, цель не создаётся", async () => {
+    m.familyGoal.count.mockRejectedValue(new Error("connection refused"));
+    const r = await createGoalAction(undefined, fd(valid));
+    expect(r).toEqual({ error: GENERIC_ERROR });
+    expect(m.familyGoal.create).not.toHaveBeenCalled();
+    expect(m.revalidatePath).not.toHaveBeenCalled();
+  });
+
+  describe("лимит 20 целей на семью", () => {
+    const LIMIT_ERROR = "Достигнут лимит: не более 20 целей на семью. Удалите ненужные цели";
+
+    it("цели считаются только по familyId из сессии", async () => {
+      await createGoalAction(undefined, fd({ ...valid, familyId: "other-fam" }));
+      expect(m.familyGoal.count).toHaveBeenCalledTimes(1);
+      expect(m.familyGoal.count).toHaveBeenCalledWith({ where: { familyId: "fam-1" } });
+    });
+
+    it("19 целей: двадцатая создаётся", async () => {
+      m.familyGoal.count.mockResolvedValue(19);
+      const r = await createGoalAction(undefined, fd(valid));
+      expect(r).toEqual({ message: "Цель создана" });
+      expect(m.familyGoal.create).toHaveBeenCalledTimes(1);
+    });
+
+    it("20 целей: 21-я отклоняется с русским сообщением, без create и revalidatePath", async () => {
+      m.familyGoal.count.mockResolvedValue(20);
+      const r = await createGoalAction(undefined, fd(valid));
+      expect(r).toEqual({ error: LIMIT_ERROR });
+      expect(m.familyGoal.create).not.toHaveBeenCalled();
+      expect(m.revalidatePath).not.toHaveBeenCalled();
+      // ожидаемый отказ пользователю не логируется как сбой
+      expect(console.error).not.toHaveBeenCalled();
+    });
+
+    it("больше 20 (например, 35, если данные уже накоплены): тоже отказ", async () => {
+      m.familyGoal.count.mockResolvedValue(35);
+      expect(await createGoalAction(undefined, fd(valid))).toEqual({ error: LIMIT_ERROR });
+      expect(m.familyGoal.create).not.toHaveBeenCalled();
+    });
+
+    it("лимит проверяется после валидации: невалидные данные не доходят до count", async () => {
+      const r = await createGoalAction(undefined, fd({ ...valid, metric: "steps" }));
+      expect(r).toEqual({ error: "Выберите метрику" });
+      expect(m.familyGoal.count).not.toHaveBeenCalled();
+    });
+
+    it("ребёнок получает отказ по роли, count не вызывается", async () => {
+      m.requireUser.mockResolvedValue({ id: "kid", familyId: "fam-1", role: "child" });
+      expect(await createGoalAction(undefined, fd(valid))).toEqual({ error: ADULT_ONLY });
+      expect(m.familyGoal.count).not.toHaveBeenCalled();
+    });
+
+    it("после удаления цели место освобождается (счёт 19 -> создание проходит)", async () => {
+      m.familyGoal.count.mockResolvedValueOnce(20).mockResolvedValueOnce(19);
+      expect(await createGoalAction(undefined, fd(valid))).toEqual({ error: LIMIT_ERROR });
+      expect(await createGoalAction(undefined, fd(valid))).toEqual({ message: "Цель создана" });
+    });
+  });
+
   it("без сессии (requireUser бросает redirect) ничего не сохраняется", async () => {
     const redirect = new Error("NEXT_REDIRECT:/login");
     m.requireUser.mockRejectedValue(redirect);
@@ -144,6 +204,19 @@ describe("deleteGoalAction", () => {
     m.familyGoal.deleteMany.mockResolvedValue({ count: 0 });
     await expect(deleteGoalAction(fd({ id: "foreign" }))).resolves.toBeUndefined();
     expect(m.familyGoal.deleteMany.mock.calls[0][0].where.familyId).toBe("fam-1");
+  });
+
+  it("успешное удаление возвращает undefined", async () => {
+    await expect(deleteGoalAction(fd({ id: "g1" }))).resolves.toBeUndefined();
+  });
+
+  it("сбой БД: русская ошибка вместо исключения, revalidatePath не вызывается, сбой логируется", async () => {
+    m.familyGoal.deleteMany.mockRejectedValue(new Error("connection refused"));
+    const r = await deleteGoalAction(fd({ id: "g1" }));
+    expect(r).toEqual({ error: "Не удалось удалить цель. Попробуйте ещё раз" });
+    expect(JSON.stringify(r)).not.toContain("connection refused");
+    expect(m.revalidatePath).not.toHaveBeenCalled();
+    expect(console.error).toHaveBeenCalled();
   });
 
   it("ребёнок: ничего не удаляется, revalidatePath не вызывается", async () => {

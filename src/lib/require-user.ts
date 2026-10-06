@@ -15,6 +15,7 @@ export async function getCurrentUser() {
       name: true,
       role: true,
       timeZone: true,
+      timeZoneChangedAt: true,
       family: {
         select: {
           name: true,

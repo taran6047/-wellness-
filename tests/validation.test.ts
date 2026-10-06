@@ -213,6 +213,52 @@ describe("validation: timeZone", () => {
     expect(timeZoneSchema.parse(undefined)).toBe("UTC");
     expect(timeZoneSchema.parse("не пояс")).toBe("UTC");
   });
+
+  it("timeZoneSchema: пробелы и переводы строк по краям обрезаются у валидных поясов", () => {
+    expect(timeZoneSchema.parse("  Europe/Moscow  ")).toBe("Europe/Moscow");
+    expect(timeZoneSchema.parse("\tAmerica/Los_Angeles\n")).toBe("America/Los_Angeles");
+    expect(timeZoneSchema.parse(" UTC ")).toBe("UTC");
+  });
+
+  it.each(["Europe/Moscow", "UTC", "America/Los_Angeles"])("timeZoneSchema: %s сохраняется как есть", (tz) => {
+    expect(timeZoneSchema.parse(tz)).toBe(tz);
+  });
+
+  it.each(["+23:59", "-05:00", "+03:00", "GMT+3", "UTC+3", "Etc/GMT+3x", "<script>", "../etc", "Europe"])(
+    "timeZoneSchema: смещение или чужое значение %j -> UTC",
+    (tz) => {
+      expect(timeZoneSchema.parse(tz)).toBe("UTC");
+    },
+  );
+
+  it.each(["utc", "europe/moscow", "EUROPE/MOSCOW"])("timeZoneSchema: регистр важен, %j -> UTC", (tz) => {
+    expect(timeZoneSchema.parse(tz)).toBe("UTC");
+  });
+
+  it("timeZoneSchema: Asia/Calcutta сохраняется, только если есть в Intl.supportedValuesOf, иначе UTC", () => {
+    const supported = Intl.supportedValuesOf("timeZone").includes("Asia/Calcutta");
+    expect(timeZoneSchema.parse("Asia/Calcutta")).toBe(supported ? "Asia/Calcutta" : "UTC");
+  });
+
+  it.each([null, 0, 42, true, {}, [], ["Europe/Moscow"]])("timeZoneSchema: не-строка %j -> UTC", (v) => {
+    expect(timeZoneSchema.parse(v)).toBe("UTC");
+  });
+
+  it("create/join: +23:59 и GMT+3 не ломают регистрацию, пояс становится UTC", () => {
+    for (const tz of ["+23:59", "GMT+3", "utc"]) {
+      const c = createFamilySchema.safeParse({ ...createBase, timeZone: tz });
+      expect(c.success).toBe(true);
+      expect(c.data!.timeZone).toBe("UTC");
+      const j = joinFamilySchema.safeParse({ ...joinBase, timeZone: tz });
+      expect(j.success).toBe(true);
+      expect(j.data!.timeZone).toBe("UTC");
+    }
+  });
+
+  it("create/join: пояс с пробелами по краям обрезается", () => {
+    expect(createFamilySchema.parse({ ...createBase, timeZone: " Europe/Moscow " }).timeZone).toBe("Europe/Moscow");
+    expect(joinFamilySchema.parse({ ...joinBase, timeZone: " Asia/Tokyo " }).timeZone).toBe("Asia/Tokyo");
+  });
 });
 
 describe("validation: loginSchema", () => {

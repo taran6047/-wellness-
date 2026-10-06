@@ -15,7 +15,7 @@ export function RegisterForm() {
   }, []);
 
   const tabClass = (active: boolean) =>
-    `flex-1 rounded-md px-3 py-2 text-sm font-medium ${
+    `min-h-11 flex-1 rounded-md px-2 py-2 text-sm font-medium ${
       active ? "bg-emerald-600 text-white" : "bg-slate-100 text-slate-700"
     }`;
 

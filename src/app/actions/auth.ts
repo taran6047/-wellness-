@@ -1,10 +1,10 @@
 "use server";
 
 import bcrypt from "bcryptjs";
-import { AuthError } from "next-auth";
+import { AuthError, CredentialsSignin } from "next-auth";
 import { Prisma } from "@prisma/client";
 import { signIn, signOut } from "@/auth";
-import { BCRYPT_COST } from "@/lib/constants";
+import { BCRYPT_COST, LOGIN_LOCKED_ERROR } from "@/lib/constants";
 import { prisma } from "@/lib/db";
 import { generateInviteCode } from "@/lib/invite-code";
 import { loginSchema, registerSchema } from "@/lib/validation";
@@ -31,6 +31,9 @@ export async function loginAction(
       redirectTo: "/family",
     });
   } catch (e) {
+    if (e instanceof CredentialsSignin && e.code === "locked") {
+      return { error: LOGIN_LOCKED_ERROR };
+    }
     if (e instanceof AuthError) return { error: LOGIN_ERROR };
     throw e; // redirect
   }

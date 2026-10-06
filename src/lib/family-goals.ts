@@ -61,13 +61,10 @@ export async function metricTotal(
   }
 }
 
-// Цели семьи с прогрессом; today — UTC-полночь сегодняшнего дня пользователя
-export async function getFamilyGoalsWithProgress(familyId: string, today: Date) {
-  const goals = await prisma.familyGoal.findMany({
-    where: { familyId },
-    orderBy: [{ endDate: "asc" }, { createdAt: "desc" }],
-  });
+type FamilyGoalRow = Awaited<ReturnType<typeof prisma.familyGoal.findMany>>[number];
 
+// Прогресс считается параллельно (запросы метрик вне транзакции)
+function withProgress(familyId: string, goals: FamilyGoalRow[], today: Date) {
   return Promise.all(
     goals.map(async (goal) => {
       const metric = isGoalMetric(goal.metric) ? goal.metric : null;
@@ -87,6 +84,39 @@ export async function getFamilyGoalsWithProgress(familyId: string, today: Date) 
       };
     }),
   );
+}
+
+const goalOrder = [{ endDate: "asc" }, { createdAt: "desc" }] as const;
+
+// Цели семьи с прогрессом; today — UTC-полночь сегодняшнего дня пользователя
+export async function getFamilyGoalsWithProgress(familyId: string, today: Date) {
+  const goals = await prisma.familyGoal.findMany({
+    where: { familyId },
+    orderBy: [...goalOrder],
+  });
+  return withProgress(familyId, goals, today);
+}
+
+// Первые limit активных целей (в процессе); прогресс считается только для тех, что могут
+// попасть в выдачу: просроченные не считаются, остальные берутся порциями по числу недостающих
+export async function getActiveGoalsWithProgress(
+  familyId: string,
+  today: Date,
+  limit: number,
+) {
+  const goals = await prisma.familyGoal.findMany({
+    where: { familyId, endDate: { gte: today } },
+    orderBy: [...goalOrder],
+  });
+
+  const active: Awaited<ReturnType<typeof withProgress>> = [];
+  for (let i = 0; i < goals.length && active.length < limit; ) {
+    const size = limit - active.length;
+    const batch = await withProgress(familyId, goals.slice(i, i + size), today);
+    active.push(...batch.filter((g) => g.status === "in_progress"));
+    i += size;
+  }
+  return active;
 }
 
 export type GoalWithProgress = Awaited<

@@ -1,7 +1,7 @@
 import Link from "next/link";
 import { GoalCard } from "@/components/goal-ui";
 import { prisma } from "@/lib/db";
-import { getFamilyGoalsWithProgress } from "@/lib/family-goals";
+import { getActiveGoalsWithProgress } from "@/lib/family-goals";
 import { levelForPoints } from "@/lib/gamification";
 import { getCurrentUser } from "@/lib/require-user";
 import { dateInTimeZone } from "@/lib/timezone";
@@ -30,13 +30,13 @@ export default async function Home() {
   }
 
   const today = new Date(`${dateInTimeZone(me.timeZone)}T00:00:00.000Z`);
-  const [sums, allGoals, achievements] = await Promise.all([
+  const [sums, activeGoals, achievements] = await Promise.all([
     prisma.pointsEvent.groupBy({
       by: ["userId"],
       where: { user: { familyId: me.familyId } },
       _sum: { points: true },
     }),
-    getFamilyGoalsWithProgress(me.familyId, today),
+    getActiveGoalsWithProgress(me.familyId, today, MAX_DASHBOARD_GOALS),
     prisma.userAchievement.findMany({
       where: { user: { familyId: me.familyId } },
       orderBy: { unlockedAt: "desc" },
@@ -55,13 +55,10 @@ export default async function Home() {
     .map((u) => ({ ...u, points: pointsByUser.get(u.id) ?? 0 }))
     .sort((a, b) => b.points - a.points);
   const familyPoints = ranking.reduce((sum, u) => sum + u.points, 0);
-  const activeGoals = allGoals
-    .filter((g) => g.status === "in_progress")
-    .slice(0, MAX_DASHBOARD_GOALS);
 
   return (
     <section>
-      <h1 className="text-2xl font-bold sm:text-3xl">{me.family.name}</h1>
+      <h1 className="break-words text-2xl font-bold sm:text-3xl">{me.family.name}</h1>
 
       <div className="mt-6 rounded-lg border border-slate-200 bg-white p-4">
         <p className="text-sm text-slate-600">Баллы семьи</p>
@@ -72,10 +69,10 @@ export default async function Home() {
       <ul className="mt-3 divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white">
         {ranking.map((u, i) => (
           <li key={u.id} className="flex justify-between gap-4 px-4 py-3">
-            <span>
+            <span className="min-w-0 break-words">
               {i + 1}. {u.name}
             </span>
-            <span className="text-slate-600">
+            <span className="shrink-0 text-slate-600">
               {u.points} · уровень {levelForPoints(u.points)}
             </span>
           </li>
@@ -94,7 +91,7 @@ export default async function Home() {
       )}
       <Link
         href="/goals"
-        className="mt-3 inline-block text-sm text-emerald-700 hover:underline"
+        className="mt-3 inline-flex min-h-11 items-center text-sm text-emerald-700 hover:underline"
       >
         Все цели
       </Link>
@@ -106,8 +103,8 @@ export default async function Home() {
         <ul className="mt-3 divide-y divide-slate-200 rounded-lg border border-slate-200 bg-white">
           {achievements.map((a) => (
             <li key={a.id} className="flex justify-between gap-4 px-4 py-3">
-              <span>{a.achievement.title}</span>
-              <span className="text-slate-600">{a.user.name}</span>
+              <span className="min-w-0 break-words">{a.achievement.title}</span>
+              <span className="shrink-0 text-slate-600">{a.user.name}</span>
             </li>
           ))}
         </ul>
@@ -119,7 +116,7 @@ export default async function Home() {
           <Link
             key={l.href}
             href={l.href}
-            className="rounded-lg border border-slate-200 bg-white p-4 text-center font-medium hover:border-emerald-600"
+            className="flex min-h-11 items-center justify-center rounded-lg border border-slate-200 bg-white p-4 text-center font-medium hover:border-emerald-600"
           >
             {l.label}
           </Link>

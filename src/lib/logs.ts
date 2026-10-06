@@ -10,6 +10,7 @@ import {
   pointsForWater,
   type LogKind,
 } from "@/lib/gamification";
+import { MAX_DAILY_RECORDS } from "@/lib/constants";
 
 const RECENT_LIMIT = 30;
 
@@ -56,64 +57,114 @@ async function awardPoints(
   return { points, newAchievements };
 }
 
+const KIND_LABELS: Record<LogKind, string> = {
+  activity: "активности",
+  meal: "питания",
+  water: "воды",
+  health: "здоровья",
+};
+
+export class DailyLimitError extends Error {
+  constructor(kind: LogKind) {
+    super(
+      `Достигнут лимит: не более ${MAX_DAILY_RECORDS} записей ${KIND_LABELS[kind]} в день`,
+    );
+    this.name = "DailyLimitError";
+  }
+}
+
+// Вызывается внутри транзакции после блокировки пользователя; count — записей того же типа за день
+function checkDailyLimit(kind: LogKind, count: number) {
+  if (count >= MAX_DAILY_RECORDS) throw new DailyLimitError(kind);
+}
+
+type Stats = {
+  activityCount: number;
+  mealCount: number;
+  waterCount: number;
+  healthCount: number;
+  totalPoints: number;
+};
+
+// Все счётчики одним запросом вместо пяти
+async function loadStats(tx: Tx, userId: string): Promise<Stats> {
+  const rows = await tx.$queryRaw<Stats[]>`
+    SELECT
+      (SELECT COUNT(*) FROM "ActivityLog" WHERE "userId" = ${userId})::int AS "activityCount",
+      (SELECT COUNT(*) FROM "MealLog" WHERE "userId" = ${userId})::int AS "mealCount",
+      (SELECT COUNT(*) FROM "WaterLog" WHERE "userId" = ${userId})::int AS "waterCount",
+      (SELECT COUNT(*) FROM "HealthLog" WHERE "userId" = ${userId})::int AS "healthCount",
+      (SELECT COALESCE(SUM(points), 0) FROM "PointsEvent" WHERE "userId" = ${userId})::int AS "totalPoints"`;
+  return rows[0];
+}
+
+// Дни с любыми записями одним запросом (UNION убирает повторы)
+async function loadLogDays(tx: Tx, userId: string): Promise<string[]> {
+  const rows = await tx.$queryRaw<{ date: Date }[]>`
+    SELECT "date" FROM "ActivityLog" WHERE "userId" = ${userId}
+    UNION SELECT "date" FROM "MealLog" WHERE "userId" = ${userId}
+    UNION SELECT "date" FROM "WaterLog" WHERE "userId" = ${userId}
+    UNION SELECT "date" FROM "HealthLog" WHERE "userId" = ${userId}`;
+  return rows.map((r) => r.date.toISOString().slice(0, 10));
+}
+
+const STREAK_CODES: string[] = ["streak_3", "streak_7"];
+
 async function grantAchievements(tx: Tx, userId: string): Promise<string[]> {
-  const [activityCount, mealCount, waterCount, healthCount, total] =
-    await Promise.all([
-      tx.activityLog.count({ where: { userId } }),
-      tx.mealLog.count({ where: { userId } }),
-      tx.waterLog.count({ where: { userId } }),
-      tx.healthLog.count({ where: { userId } }),
-      tx.pointsEvent.aggregate({ where: { userId }, _sum: { points: true } }),
-    ]);
-  const dayQuery = {
-    where: { userId },
-    select: { date: true },
-    distinct: ["date" as const],
-  };
-  const dayRows = await Promise.all([
-    tx.activityLog.findMany(dayQuery),
-    tx.mealLog.findMany(dayQuery),
-    tx.waterLog.findMany(dayQuery),
-    tx.healthLog.findMany(dayQuery),
-  ]);
-  const logDays = dayRows.flat().map((r) => r.date.toISOString().slice(0, 10));
-
-  const earned = earnedAchievements({
-    activityCount,
-    mealCount,
-    waterCount,
-    healthCount,
-    logDays,
-    totalPoints: total._sum.points ?? 0,
-  });
-
   const already = await tx.userAchievement.findMany({
     where: { userId },
     select: { achievement: { select: { code: true } } },
   });
   const have = new Set(already.map((a) => a.achievement.code));
-  const fresh = ACHIEVEMENTS.filter(
-    (a) => earned.includes(a.code) && !have.has(a.code),
-  );
+  // Всё уже выдано: новых достижений быть не может
+  if (ACHIEVEMENTS.every((a) => have.has(a.code))) return [];
 
-  const granted: string[] = [];
-  for (const a of fresh) {
-    // Каталог пополняется безопасно для повторов (параллельные транзакции разных пользователей)
-    await tx.achievement.createMany({
-      data: [{ code: a.code, title: a.title, description: a.description }],
-      skipDuplicates: true,
-    });
-    const achievement = await tx.achievement.findUniqueOrThrow({
-      where: { code: a.code },
-    });
-    // Повторная выдача (гонка) молча пропускается
-    const created = await tx.userAchievement.createMany({
-      data: [{ userId, achievementId: achievement.id }],
-      skipDuplicates: true,
-    });
-    if (created.count > 0) granted.push(a.title);
-  }
-  return granted;
+  // Считаем только то, что нужно для ещё не выданных достижений
+  const missing = ACHIEVEMENTS.filter((a) => !have.has(a.code));
+  const needStats = missing.some((a) => !STREAK_CODES.includes(a.code));
+  const needDays = missing.some((a) => STREAK_CODES.includes(a.code));
+  const [stats, logDays] = await Promise.all([
+    needStats ? loadStats(tx, userId) : null,
+    needDays ? loadLogDays(tx, userId) : [],
+  ]);
+
+  const earned = earnedAchievements({
+    activityCount: stats?.activityCount ?? 0,
+    mealCount: stats?.mealCount ?? 0,
+    waterCount: stats?.waterCount ?? 0,
+    healthCount: stats?.healthCount ?? 0,
+    logDays,
+    totalPoints: stats?.totalPoints ?? 0,
+  });
+  const fresh = missing.filter((a) => earned.includes(a.code));
+  if (fresh.length === 0) return [];
+
+  // Каталог пополняется безопасно для повторов; выдача — тремя запросами на все новые достижения
+  await tx.achievement.createMany({
+    data: fresh.map((a) => ({
+      code: a.code,
+      title: a.title,
+      description: a.description,
+    })),
+    skipDuplicates: true,
+  });
+  const catalog = await tx.achievement.findMany({
+    where: { code: { in: fresh.map((a) => a.code) } },
+    select: { id: true, code: true },
+  });
+  // Повторная выдача (гонка) молча пропускается: возвращаются только реально созданные
+  const created = await tx.userAchievement.createManyAndReturn({
+    data: catalog.map((c) => ({ userId, achievementId: c.id })),
+    skipDuplicates: true,
+    select: { achievementId: true },
+  });
+  const createdIds = new Set(created.map((c) => c.achievementId));
+  const titleByCode = new Map<string, string>(
+    fresh.map((a) => [a.code, a.title]),
+  );
+  return catalog
+    .filter((c) => createdIds.has(c.id))
+    .map((c) => titleByCode.get(c.code) as string);
 }
 
 // Все записи — только от имени userId. Запись и баллы создаются в одной транзакции.
@@ -129,6 +180,10 @@ export function createActivityLog(
 ): Promise<CreateResult> {
   return prisma.$transaction(async (tx) => {
     await lockUser(tx, userId);
+    checkDailyLimit(
+      "activity",
+      await tx.activityLog.count({ where: { userId, date: data.date } }),
+    );
     const log = await tx.activityLog.create({ data: { ...data, userId } });
     return awardPoints(
       tx,
@@ -147,6 +202,10 @@ export function createMealLog(
 ): Promise<CreateResult> {
   return prisma.$transaction(async (tx) => {
     await lockUser(tx, userId);
+    checkDailyLimit(
+      "meal",
+      await tx.mealLog.count({ where: { userId, date: data.date } }),
+    );
     const log = await tx.mealLog.create({ data: { ...data, userId } });
     return awardPoints(tx, userId, "meal", log.id, data.date, pointsForMeal());
   }, TX_OPTIONS);
@@ -158,6 +217,10 @@ export function createWaterLog(
 ): Promise<CreateResult> {
   return prisma.$transaction(async (tx) => {
     await lockUser(tx, userId);
+    checkDailyLimit(
+      "water",
+      await tx.waterLog.count({ where: { userId, date: data.date } }),
+    );
     const log = await tx.waterLog.create({ data: { ...data, userId } });
     return awardPoints(
       tx,
@@ -182,6 +245,10 @@ export function createHealthLog(
 ): Promise<CreateResult> {
   return prisma.$transaction(async (tx) => {
     await lockUser(tx, userId);
+    checkDailyLimit(
+      "health",
+      await tx.healthLog.count({ where: { userId, date: data.date } }),
+    );
     const log = await tx.healthLog.create({ data: { ...data, userId } });
     return awardPoints(
       tx,
